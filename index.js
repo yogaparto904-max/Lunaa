@@ -10,10 +10,15 @@ const {
   EmbedBuilder,
   ModalBuilder,
   TextInputBuilder,
-  TextInputStyle
+  TextInputStyle,
+  MessageFlags
 } = require('discord.js');
 
-const { joinVoiceChannel } = require('@discordjs/voice');
+const {
+  joinVoiceChannel,
+  VoiceConnectionStatus,
+  entersState
+} = require('@discordjs/voice');
 
 const client = new Client({
   intents: [
@@ -22,209 +27,401 @@ const client = new Client({
   ]
 });
 
-// ===== CONFIG =====
+// =======================
+// ⚙️ CONFIG
+// =======================
 const TRIGGER_CHANNEL_ID = "1489151653658759238";
 const CATEGORY_ID = "1488141665578520616";
 const PANEL_CHANNEL_ID = "1489141959040696351";
+const AUTO_VC_ID = "1488854856633680083";
 
-// ===== DATABASE =====
-const owners = new Map();
+const PANEL_TITLE = "BETLEHEM INTERFACE";
+const PANEL_IMAGE = "https://media.discordapp.net/attachments/1487590787284734143/1489196472720167022/image_3.png?ex=69cf89cb&is=69ce384b&hm=3bdad0fab2f2ac7f9a9266a57f34b0fb0d8d6af8d092a520b70ccfe51d3038bc&=&format=webp&quality=lossless";
+const LOGO_URL = "https://media.discordapp.net/attachments/1487590787284734143/1492050545219862598/bthl.png";
+const FOOTER_TEXT = "Luna • Copyright ©2018 - BTHL";
 
-// ===== EMBED RESPONSE =====
-function successEmbed(desc, guild) {
+const EMOJI = {
+  name:   { name: "rn",  id: "1489177109711818823" },
+  limit:  { name: "lim", id: "1489177299969380404" },
+  lock:   { name: "lc",  id: "1489177237277249536" },
+  unlock: { name: "op",  id: "1489177192490598430" },
+  region: { name: "gl",  id: "1489177019311984660" },
+  claim:  { name: "cr",  id: "1489177359318778020" }
+};
+const e = k => `<:${EMOJI[k].name}:${EMOJI[k].id}>`;
+
+const PANEL_BUTTONS = ['name', 'limit', 'lock', 'unlock', 'region', 'claim'];
+
+// =======================
+// 💾 DATA OWNER ROOM
+// =======================
+const owners = new Map(); // channelId -> userId
+
+// =======================
+// 🎨 EMBED
+// =======================
+function baseEmbed(guild) {
   return new EmbedBuilder()
-    .setColor('#2b2d31')
-    .setTitle('Updated!')
-    .setDescription(desc)
-    .setFooter({
-      text: "TempVoice System",
-      iconURL: guild?.iconURL({ dynamic: true })
-    });
+    .setAuthor({ name: "BETLEHEM — Temporary Voice", iconURL: LOGO_URL })
+    .setFooter({ text: FOOTER_TEXT, iconURL: guild?.iconURL() || undefined })
+    .setTimestamp();
 }
 
-// ===== PANEL =====
-function getPanel(guild) {
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('name')
-      .setEmoji({ name: "rn", id: "1489177109711818823" })
-      .setStyle(ButtonStyle.Secondary),
-
-    new ButtonBuilder().setCustomId('limit')
-      .setEmoji({ name: "lim", id: "1489177299969380404" })
-      .setStyle(ButtonStyle.Secondary),
-
-    new ButtonBuilder().setCustomId('lock')
-      .setEmoji({ name: "lc", id: "1489177237277249536" })
-      .setStyle(ButtonStyle.Secondary),
-
-    new ButtonBuilder().setCustomId('unlock')
-      .setEmoji({ name: "op", id: "1489177192490598430" })
-      .setStyle(ButtonStyle.Secondary),
-
-    new ButtonBuilder().setCustomId('region')
-      .setEmoji({ name: "gl", id: "1489177019311984660" })
-      .setStyle(ButtonStyle.Secondary)
-  );
-
-  const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('claim')
-      .setEmoji({ name: "cr", id: "1489177359318778020" })
-      .setStyle(ButtonStyle.Primary)
-  );
-
-  const embed = new EmbedBuilder()
+function successEmbed(title, desc, guild) {
+  return baseEmbed(guild)
     .setColor('#00b8b8')
-    .setAuthor({ name: "BETLEHEM — Temporary Voice." })
-    .setTitle('BETLEHEM INTERFACE')
-    .setDescription(`Gunakan tombol dibawah untuk mengatur voice anda.`)
-    .setImage("https://media.discordapp.net/attachments/1487590787284734143/1489196472720167022/image_3.png?ex=69cf89cb&is=69ce384b&hm=3bdad0fab2f2ac7f9a9266a57f34b0fb0d8d6af8d092a520b70ccfe51d3038bc&=&format=webp&quality=lossless")
-    .setFooter({
-      text: "Copyright ©2018 - BTHL |•16/05/2025 15:35",
-      iconURL: guild?.iconURL({ dynamic: true })
-    });
-
-  return { embed, components: [row, row2] };
+    .setTitle(`✨ ${title}`)
+    .setDescription(desc);
 }
 
-// ===== READY + AUTO JOIN =====
-client.once('ready', async () => {
-  console.log(`Login sebagai ${client.user.tag}`);
+function errorEmbed(desc, guild) {
+  return baseEmbed(guild)
+    .setColor('#ED4245')
+    .setTitle('⚠️ Gagal')
+    .setDescription(desc);
+}
 
-  // PANEL
-  const ch = await client.channels.fetch(PANEL_CHANNEL_ID);
-  const msgs = await ch.messages.fetch({ limit: 10 });
+const ephem = embed => ({ embeds: [embed], flags: MessageFlags.Ephemeral });
 
-  if (!msgs.find(m => m.author.id === client.user.id)) {
-    const panel = getPanel(ch.guild);
-    await ch.send({ embeds: [panel.embed], components: panel.components });
-  }
-
-  // AUTO JOIN VC
+// =======================
+// 🔥 AUTO JOIN + AUTO REJOIN VC
+// =======================
+async function connectToVC() {
   try {
-    const guild = client.guilds.cache.first();
-    if (!guild) return;
+    const vc = await client.channels.fetch(AUTO_VC_ID).catch(() => null);
+    if (!vc || vc.type !== ChannelType.GuildVoice) {
+      return console.log("❌ VC tidak ditemukan");
+    }
 
-    const channel = guild.channels.cache.get( "1488854856633680083" );
-    if (!channel) return;
-
-    joinVoiceChannel({
-      channelId: channel.id,
-      guildId: guild.id,
-      adapterCreator: guild.voiceAdapterCreator,
+    const connection = joinVoiceChannel({
+      channelId: vc.id,
+      guildId: vc.guild.id,
+      adapterCreator: vc.guild.voiceAdapterCreator,
       selfDeaf: false
     });
 
-    console.log("Auto join VC aktif");
+    console.log("🎤 Auto join VC aktif");
+
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      try {
+        await Promise.race([
+          entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5000)
+        ]);
+      } catch {
+        console.log("🔄 Bot keluar VC, rejoin...");
+        try { connection.destroy(); } catch {}
+        setTimeout(connectToVC, 3000);
+      }
+    });
   } catch (err) {
-    console.log("Gagal auto join:", err);
+    console.log("❌ Gagal auto join:", err);
+    setTimeout(connectToVC, 5000);
   }
+}
+
+// =======================
+// 📦 PANEL (TIDAK NYAMPAH)
+// =======================
+function getPanel(guild) {
+  const btn = (id, style = ButtonStyle.Secondary) =>
+    new ButtonBuilder().setCustomId(id).setEmoji(EMOJI[id]).setStyle(style);
+
+  const row = new ActionRowBuilder().addComponents(
+    btn('name'), btn('limit'), btn('lock'), btn('unlock'), btn('region')
+  );
+  const row2 = new ActionRowBuilder().addComponents(
+    btn('claim', ButtonStyle.Primary)
+  );
+
+  const embed = baseEmbed(guild)
+    .setColor('#00b8b8')
+    .setTitle(PANEL_TITLE)
+    .setDescription(
+      `Masuk ke <#${TRIGGER_CHANNEL_ID}> untuk membuat voice pribadi kamu, ` +
+      "lalu gunakan tombol di bawah untuk mengaturnya.\n\n" +
+      `${e('name')} **Rename** — Ganti nama voice\n` +
+      `${e('limit')} **Limit** — Atur batas jumlah user\n` +
+      `${e('lock')} **Lock** — Kunci voice\n` +
+      `${e('unlock')} **Unlock** — Buka voice\n` +
+      `${e('region')} **Region** — Ganti region (Singapore / Auto)\n` +
+      `${e('claim')} **Claim** — Ambil alih voice kalau owner sudah keluar`
+    )
+    .setImage(PANEL_IMAGE);
+
+  return { embeds: [embed], components: [row, row2] };
+}
+
+async function sendOrUpdatePanel() {
+  const ch = await client.channels.fetch(PANEL_CHANNEL_ID).catch(() => null);
+  if (!ch) return console.log("❌ Channel panel tidak ditemukan");
+
+  const recent = await ch.messages.fetch({ limit: 100 }).catch(() => null);
+  const panels = recent
+    ? [...recent.filter(m =>
+        m.author.id === client.user.id &&
+        m.embeds[0]?.title === PANEL_TITLE
+      ).values()] // urut terbaru dulu
+    : [];
+
+  const panelMsg = panels[0] || null;
+
+  for (const m of panels.slice(1)) {
+    await m.delete().catch(() => {});
+    console.log(`🧹 Hapus panel duplikat ${m.id}`);
+  }
+
+  const payload = getPanel(ch.guild);
+
+  if (panelMsg) {
+    try {
+      await panelMsg.edit(payload);
+      console.log("♻️ Panel di-update");
+      return;
+    } catch {
+      console.log("⚠️ Gagal edit panel, kirim ulang");
+      await panelMsg.delete().catch(() => {});
+    }
+  }
+
+  await ch.send(payload);
+  console.log("✅ Panel dikirim");
+}
+
+// =======================
+// 🧹 ROOM HELPER
+// =======================
+function isTempRoom(channel) {
+  return (
+    channel &&
+    channel.type === ChannelType.GuildVoice &&
+    channel.parentId === CATEGORY_ID &&
+    channel.id !== TRIGGER_CHANNEL_ID &&
+    channel.id !== AUTO_VC_ID
+  );
+}
+
+async function cleanupEmptyRooms() {
+  const category = await client.channels.fetch(CATEGORY_ID).catch(() => null);
+  if (!category) return;
+
+  for (const ch of category.children.cache.values()) {
+    if (isTempRoom(ch) && ch.members.size === 0) {
+      await ch.delete().catch(() => {});
+      console.log(`🧹 Hapus room kosong: ${ch.name}`);
+    }
+  }
+}
+
+// =======================
+// 🚀 READY
+// =======================
+client.once('clientReady', async () => {
+  console.log(`Login sebagai ${client.user.tag}`);
+
+  setTimeout(connectToVC, 3000);
+
+  try {
+    await sendOrUpdatePanel();
+  } catch (err) {
+    console.log("❌ Error setup panel:", err);
+  }
+
+  // room sisa sebelum restart yang sudah kosong
+  await cleanupEmptyRooms().catch(() => {});
 });
 
-// ===== TEMP VOICE =====
+// =======================
+// 🔊 TEMP VOICE
+// =======================
 client.on('voiceStateUpdate', async (oldState, newState) => {
 
-  if (newState.channelId === TRIGGER_CHANNEL_ID) {
-    const vc = await newState.guild.channels.create({
-      name: `${newState.member.user.username}`,
-      type: ChannelType.GuildVoice,
-      parent: CATEGORY_ID
-    });
+  // Masuk trigger → buat room
+  if (
+    newState.channelId === TRIGGER_CHANNEL_ID &&
+    oldState.channelId !== TRIGGER_CHANNEL_ID
+  ) {
+    try {
+      const member = newState.member;
+      const vc = await newState.guild.channels.create({
+        name: member.displayName,
+        type: ChannelType.GuildVoice,
+        parent: CATEGORY_ID
+      });
 
-    owners.set(vc.id, newState.member.id);
-    await newState.setChannel(vc);
-  }
-
-  if (!oldState.channel) return;
-  if (oldState.channel.id === TRIGGER_CHANNEL_ID) return;
-  if (oldState.channel.parentId !== CATEGORY_ID) return;
-
-  setTimeout(() => {
-    if (oldState.channel && oldState.channel.members.size === 0) {
-      owners.delete(oldState.channel.id);
-      oldState.channel.delete().catch(() => {});
+      owners.set(vc.id, member.id);
+      await newState.setChannel(vc);
+    } catch (err) {
+      console.log("❌ Gagal buat room:", err.message);
     }
-  }, 3000);
+  }
+
+  // Keluar dari room → hapus kalau kosong
+  const oldChannel = oldState.channel;
+  if (isTempRoom(oldChannel) && oldState.channelId !== newState.channelId) {
+    setTimeout(() => {
+      if (oldChannel.members.size === 0) {
+        owners.delete(oldChannel.id);
+        oldChannel.delete().catch(() => {});
+      }
+    }, 3000);
+  }
 });
 
-// ===== BUTTON =====
+// =======================
+// 🎛️ BUTTON
+// =======================
 client.on('interactionCreate', async (i) => {
-
   if (!i.isButton()) return;
+  if (!PANEL_BUTTONS.includes(i.customId)) return;
 
-  const vc = i.member.voice.channel;
-  if (!vc) return i.reply({ content: "Masuk VC dulu ❌", ephemeral: true });
+  try {
+    const vc = i.member.voice.channel;
 
-  if (owners.get(vc.id) !== i.user.id)
-    return i.reply({ content: "Bukan room kamu ❌", ephemeral: true });
+    if (!vc || !isTempRoom(vc)) {
+      return i.reply(ephem(errorEmbed(
+        `> Kamu harus berada di voice pribadi dulu.\n> Masuk ke <#${TRIGGER_CHANNEL_ID}> untuk membuat voice.`,
+        i.guild
+      )));
+    }
 
-  if (i.customId === 'name') {
-    const modal = new ModalBuilder()
-      .setCustomId('rename')
-      .setTitle('Rename VC');
+    const ownerId = owners.get(vc.id);
 
-    const input = new TextInputBuilder()
-      .setCustomId('nameInput')
-      .setLabel('Nama Baru')
-      .setStyle(TextInputStyle.Short);
+    // CLAIM: boleh kalau owner tidak ada / sudah keluar dari voice
+    if (i.customId === 'claim') {
+      if (ownerId === i.user.id) {
+        return i.reply(ephem(errorEmbed('> Kamu sudah menjadi owner voice ini.', i.guild)));
+      }
+      if (ownerId && vc.members.has(ownerId)) {
+        return i.reply(ephem(errorEmbed(`> Owner <@${ownerId}> masih ada di voice ini.`, i.guild)));
+      }
 
-    modal.addComponents(new ActionRowBuilder().addComponents(input));
-    return i.showModal(modal);
-  }
+      owners.set(vc.id, i.user.id);
+      return i.reply(ephem(successEmbed(
+        'Claim Berhasil',
+        `> Sekarang kamu adalah **owner** dari <#${vc.id}> 👑`,
+        i.guild
+      )));
+    }
 
-  if (i.customId === 'limit') {
-    const modal = new ModalBuilder()
-      .setCustomId('limit')
-      .setTitle('Set Limit');
+    // Tombol lain: khusus owner
+    if (ownerId !== i.user.id) {
+      return i.reply(ephem(errorEmbed(
+        ownerId
+          ? `> Voice ini milik <@${ownerId}>.`
+          : `> Voice ini belum punya owner. Tekan ${e('claim')} **Claim** dulu.`,
+        i.guild
+      )));
+    }
 
-    const input = new TextInputBuilder()
-      .setCustomId('limitInput')
-      .setLabel('Jumlah User')
-      .setStyle(TextInputStyle.Short);
+    if (i.customId === 'name') {
+      const modal = new ModalBuilder()
+        .setCustomId('rename')
+        .setTitle('Rename Voice');
 
-    modal.addComponents(new ActionRowBuilder().addComponents(input));
-    return i.showModal(modal);
-  }
+      const input = new TextInputBuilder()
+        .setCustomId('nameInput')
+        .setLabel('Nama Baru')
+        .setStyle(TextInputStyle.Short)
+        .setMaxLength(100)
+        .setRequired(true);
 
-  if (i.customId === 'lock') {
-    await vc.permissionOverwrites.edit(i.guild.roles.everyone, { Connect: false });
-    return i.reply({ embeds: [successEmbed(`Channel berhasil dikunci.`, i.guild)], ephemeral: true });
-  }
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return i.showModal(modal);
+    }
 
-  if (i.customId === 'unlock') {
-    await vc.permissionOverwrites.edit(i.guild.roles.everyone, { Connect: true });
-    return i.reply({ embeds: [successEmbed(`Channel berhasil dibuka.`, i.guild)], ephemeral: true });
-  }
+    if (i.customId === 'limit') {
+      const modal = new ModalBuilder()
+        .setCustomId('limit')
+        .setTitle('Set Limit');
 
-  if (i.customId === 'region') {
-    await vc.setRTCRegion('singapore');
-    return i.reply({ embeds: [successEmbed(`Region berhasil diubah.`, i.guild)], ephemeral: true });
-  }
+      const input = new TextInputBuilder()
+        .setCustomId('limitInput')
+        .setLabel('Jumlah User (0 = tanpa batas, maks 99)')
+        .setStyle(TextInputStyle.Short)
+        .setMaxLength(2)
+        .setRequired(true);
 
-  if (i.customId === 'claim') {
-    owners.set(vc.id, i.user.id);
-    return i.reply({ embeds: [successEmbed(`Sekarang kamu adalah owner.`, i.guild)], ephemeral: true });
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return i.showModal(modal);
+    }
+
+    if (i.customId === 'lock') {
+      await vc.permissionOverwrites.edit(i.guild.roles.everyone, { Connect: false });
+      return i.reply(ephem(successEmbed('Voice Dikunci', `> ${e('lock')} <#${vc.id}> berhasil **dikunci** 🔒`, i.guild)));
+    }
+
+    if (i.customId === 'unlock') {
+      await vc.permissionOverwrites.edit(i.guild.roles.everyone, { Connect: true });
+      return i.reply(ephem(successEmbed('Voice Dibuka', `> ${e('unlock')} <#${vc.id}> berhasil **dibuka** 🔓`, i.guild)));
+    }
+
+    if (i.customId === 'region') {
+      const next = vc.rtcRegion === 'singapore' ? null : 'singapore';
+      await vc.setRTCRegion(next);
+      return i.reply(ephem(successEmbed(
+        'Region Diubah',
+        `> ${e('region')} Region sekarang: **${next ? 'Singapore' : 'Automatic'}** 🌏`,
+        i.guild
+      )));
+    }
+  } catch (err) {
+    console.log("❌ Error button:", err.message);
+    if (!i.replied && !i.deferred) {
+      i.reply(ephem(errorEmbed('> Terjadi kendala, silahkan hubungi **ADMIN** ya.', i.guild))).catch(() => {});
+    }
   }
 });
 
-// ===== MODAL =====
+// =======================
+// 📝 MODAL
+// =======================
 client.on('interactionCreate', async (i) => {
-
   if (!i.isModalSubmit()) return;
+  if (!['rename', 'limit'].includes(i.customId)) return;
 
-  const vc = i.member.voice.channel;
-  if (!vc) return;
+  try {
+    const vc = i.member.voice.channel;
 
-  if (i.customId === 'rename') {
-    const name = i.fields.getTextInputValue('nameInput');
-    await vc.setName(name);
-    return i.reply({ embeds: [successEmbed(`Nama channel diubah ke **${name}**.`, i.guild)], ephemeral: true });
-  }
+    if (!vc || owners.get(vc.id) !== i.user.id) {
+      return i.reply(ephem(errorEmbed('> Kamu harus berada di voice milikmu sendiri.', i.guild)));
+    }
 
-  if (i.customId === 'limit') {
-    const limit = parseInt(i.fields.getTextInputValue('limitInput'));
-    await vc.setUserLimit(limit);
-    return i.reply({ embeds: [successEmbed(`User limit sekarang **${limit}**.`, i.guild)], ephemeral: true });
+    if (i.customId === 'rename') {
+      const name = i.fields.getTextInputValue('nameInput').trim();
+      if (!name) {
+        return i.reply(ephem(errorEmbed('> Nama tidak boleh kosong.', i.guild)));
+      }
+
+      await vc.setName(name);
+      return i.reply(ephem(successEmbed('Nama Diubah', `> ${e('name')} Nama voice sekarang **${name}**`, i.guild)));
+    }
+
+    if (i.customId === 'limit') {
+      const limit = parseInt(i.fields.getTextInputValue('limitInput'), 10);
+      if (isNaN(limit) || limit < 0 || limit > 99) {
+        return i.reply(ephem(errorEmbed('> Masukkan angka **0 – 99** ya.', i.guild)));
+      }
+
+      await vc.setUserLimit(limit);
+      return i.reply(ephem(successEmbed(
+        'Limit Diubah',
+        `> ${e('limit')} User limit sekarang **${limit === 0 ? 'Tanpa batas' : `${limit} users`}**`,
+        i.guild
+      )));
+    }
+  } catch (err) {
+    console.log("❌ Error modal:", err.message);
+    if (!i.replied && !i.deferred) {
+      i.reply(ephem(errorEmbed('> Terjadi kendala, silahkan hubungi **ADMIN** ya.', i.guild))).catch(() => {});
+    }
   }
 });
+
+// =======================
+// 🛡️ ANTI CRASH
+// =======================
+process.on('unhandledRejection', err => console.log('Unhandled Rejection:', err));
+process.on('uncaughtException', err => console.log('Uncaught Exception:', err));
 
 client.login(process.env.TOKEN);
