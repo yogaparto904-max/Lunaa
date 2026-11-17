@@ -62,7 +62,7 @@ const owners = new Map(); // channelId -> userId
 // =======================
 function baseEmbed(guild) {
   return new EmbedBuilder()
-    .setAuthor({ name: "BETLEHEM — Temporary Voice", iconURL: LOGO_URL })
+    .setAuthor({ name: "BETLEHEM HANGOUT", iconURL: LOGO_URL })
     .setFooter({ text: FOOTER_TEXT, iconURL: guild?.iconURL() || undefined })
     .setTimestamp();
 }
@@ -137,16 +137,7 @@ function getPanel(guild) {
   const embed = baseEmbed(guild)
     .setColor('#00b8b8')
     .setTitle(PANEL_TITLE)
-    .setDescription(
-      `Masuk ke <#${TRIGGER_CHANNEL_ID}> untuk membuat voice pribadi kamu, ` +
-      "lalu gunakan tombol di bawah untuk mengaturnya.\n\n" +
-      `${e('name')} **Rename** — Ganti nama voice\n` +
-      `${e('limit')} **Limit** — Atur batas jumlah user\n` +
-      `${e('lock')} **Lock** — Kunci voice\n` +
-      `${e('unlock')} **Unlock** — Buka voice\n` +
-      `${e('region')} **Region** — Ganti region (Singapore / Auto)\n` +
-      `${e('claim')} **Claim** — Ambil alih voice kalau owner sudah keluar`
-    )
+    .setDescription("Gunakan tombol dibawah untuk mengatur voice anda.")
     .setImage(PANEL_IMAGE);
 
   return { embeds: [embed], components: [row, row2] };
