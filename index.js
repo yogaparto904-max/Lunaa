@@ -232,7 +232,7 @@ client.once('clientReady', async () => {
   for (const guild of client.guilds.cache.values()) {
     await guild.commands.create({
       name: "tiktoktest",
-      description: "Kirim test preview announce live TikTok ke channel announce",
+      description: "Kirim test preview announce live TikTok ke channel ini",
       default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
       dm_permission: false
     }).catch(err => console.log(`⚠️ Gagal daftar /tiktoktest di ${guild.name}:`, err.message));
@@ -325,11 +325,10 @@ client.on('interactionCreate', async (i) => {
   try {
     await i.deferReply({ flags: MessageFlags.Ephemeral });
 
-    const ch = await client.channels.fetch(TIKTOK_CHANNEL_ID).catch(() => null);
-    if (!ch) {
-      return i.editReply({ embeds: [errorEmbed(
-        '> Channel announce TikTok tidak ditemukan.\n> Cek `TIKTOK_CHANNEL_ID` di config.', i.guild
-      )] });
+    // Test dikirim ke channel tempat command diketik
+    const ch = i.channel;
+    if (!ch?.isTextBased()) {
+      return i.editReply({ embeds: [errorEmbed('> Channel ini tidak bisa dikirimi pesan.', i.guild)] });
     }
 
     // Pakai data asli profil TikTok; kalau sedang offline, judul/cover diisi contoh
@@ -356,7 +355,7 @@ client.on('interactionCreate', async (i) => {
     )] });
   } catch (err) {
     console.log("❌ Error /tiktoktest:", err.message);
-    i.editReply({ embeds: [errorEmbed('> Gagal kirim test. Cek izin bot di channel announce.', i.guild)] }).catch(() => {});
+    i.editReply({ embeds: [errorEmbed('> Gagal kirim test. Cek izin bot (Send Messages & Embed Links) di channel ini.', i.guild)] }).catch(() => {});
   }
 });
 
