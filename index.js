@@ -55,7 +55,7 @@ const PANEL_BUTTONS = ['name', 'limit', 'lock', 'unlock', 'region', 'claim'];
 
 // 📺 TIKTOK LIVE ANNOUNCE
 const TIKTOK_USERNAME = "ccheryll.a";
-const TIKTOK_CHANNEL_ID = process.env.TIKTOK_CHANNEL_ID || "ISI_ID_CHANNEL_DISINI"; // channel tempat announce
+const TIKTOK_CHANNEL_ID = process.env.TIKTOK_CHANNEL_ID || "1573393206060519695"; // channel tempat announce
 const TIKTOK_PING = "";              // contoh: "@everyone" atau "<@&ID_ROLE>" — kosongkan kalau tidak mau ping
 const TIKTOK_CHECK_INTERVAL = 60000; // cek tiap 60 detik
 const TIKTOK_LINKTREE = "https://linktr.ee/cherylla";
