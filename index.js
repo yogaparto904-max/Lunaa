@@ -11,7 +11,8 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  MessageFlags
+  MessageFlags,
+  PermissionFlagsBits
 } = require('discord.js');
 
 const {
@@ -51,6 +52,12 @@ const EMOJI = {
 const e = k => `<:${EMOJI[k].name}:${EMOJI[k].id}>`;
 
 const PANEL_BUTTONS = ['name', 'limit', 'lock', 'unlock', 'region', 'claim'];
+
+// 📺 TIKTOK LIVE ANNOUNCE
+const TIKTOK_USERNAME = "ccheryll.a";
+const TIKTOK_CHANNEL_ID = process.env.TIKTOK_CHANNEL_ID || "ISI_ID_CHANNEL_DISINI"; // channel tempat announce
+const TIKTOK_PING = "";              // contoh: "@everyone" atau "<@&ID_ROLE>" — kosongkan kalau tidak mau ping
+const TIKTOK_CHECK_INTERVAL = 60000; // cek tiap 60 detik
 
 // =======================
 // 💾 DATA OWNER ROOM
@@ -220,7 +227,191 @@ client.once('clientReady', async () => {
 
   // room sisa sebelum restart yang sudah kosong
   await cleanupEmptyRooms().catch(() => {});
+
+  // Slash command /tiktoktest (khusus yang punya izin Manage Server)
+  for (const guild of client.guilds.cache.values()) {
+    await guild.commands.create({
+      name: "tiktoktest",
+      description: "Kirim test preview announce live TikTok ke channel announce",
+      default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
+      dm_permission: false
+    }).catch(err => console.log(`⚠️ Gagal daftar /tiktoktest di ${guild.name}:`, err.message));
+  }
+
+  // TikTok live announce
+  checkTiktokLive();
+  setInterval(checkTiktokLive, TIKTOK_CHECK_INTERVAL);
 });
+
+// =======================
+// 📺 TIKTOK LIVE ANNOUNCE
+// =======================
+const TIKTOK_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const TIKTOK_LIVE_URL = `https://www.tiktok.com/@${TIKTOK_USERNAME}/live`;
+
+let tiktokAnnounce = null; // { roomId, message, viewers }
+let tiktokChecking = false;
+
+// TikTok tidak punya API resmi; ini endpoint yang dipakai web TikTok sendiri.
+// status 2 = sedang live, 4 = offline.
+async function getTiktokLive() {
+  try {
+    const res = await fetch(
+      `https://www.tiktok.com/api-live/user/room/?aid=1988&sourceType=54&uniqueId=${encodeURIComponent(TIKTOK_USERNAME)}`,
+      { headers: { "User-Agent": TIKTOK_UA }, signal: AbortSignal.timeout(15000) }
+    );
+    const json = await res.json();
+    const user = json?.data?.user;
+    const room = json?.data?.liveRoom;
+    if (!user) return null;
+
+    return {
+      live: user.status === 2 || room?.status === 2,
+      roomId: user.roomId,
+      nickname: user.nickname || TIKTOK_USERNAME,
+      avatar: user.avatarThumb || user.avatarMedium,
+      avatarLarge: user.avatarLarger || user.avatarMedium || user.avatarThumb,
+      title: room?.title || "",
+      cover: room?.coverUrl || room?.squareCoverImg || "",
+      viewers: room?.liveRoomStats?.userCount ?? 0
+    };
+  } catch (err) {
+    console.log("⚠️ Gagal cek TikTok:", err.message);
+    return null;
+  }
+}
+
+function tiktokPayload(info, ended = false) {
+  const embed = new EmbedBuilder()
+    .setColor(ended ? 0x4f545c : 0xfe2c55)
+    .setAuthor({
+      name: info.nickname,
+      iconURL: info.avatar || undefined,
+      url: `https://www.tiktok.com/@${TIKTOK_USERNAME}`
+    })
+    .setTitle(info.title || `${info.nickname} sedang live!`)
+    // room id ditaruh di URL supaya setelah restart bot tahu live ini sudah diumumkan
+    .setURL(`${TIKTOK_LIVE_URL}?room=${info.roomId}`);
+
+  if (ended) {
+    embed.setDescription("Live sudah selesai.");
+  } else {
+    embed.addFields({ name: "Viewers", value: String(info.viewers) });
+    if (info.cover) embed.setImage(info.cover);
+  }
+
+  const button = new ButtonBuilder()
+    .setStyle(ButtonStyle.Link)
+    .setLabel("Watch Stream")
+    .setURL(TIKTOK_LIVE_URL);
+
+  const content = ended
+    ? `**${info.nickname}** was live.`
+    : `${TIKTOK_PING ? TIKTOK_PING + " " : ""}**${info.nickname}** is live!`;
+
+  return {
+    content,
+    embeds: [embed],
+    components: ended ? [] : [new ActionRowBuilder().addComponents(button)]
+  };
+}
+
+// =======================
+// 🧪 TEST PREVIEW (/tiktoktest)
+// =======================
+client.on('interactionCreate', async (i) => {
+  if (!i.isChatInputCommand() || i.commandName !== 'tiktoktest') return;
+
+  try {
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const ch = await client.channels.fetch(TIKTOK_CHANNEL_ID).catch(() => null);
+    if (!ch) {
+      return i.editReply({ embeds: [errorEmbed(
+        '> Channel announce TikTok tidak ditemukan.\n> Cek `TIKTOK_CHANNEL_ID` di config.', i.guild
+      )] });
+    }
+
+    // Pakai data asli profil TikTok; kalau sedang offline, judul/cover diisi contoh
+    const info = await getTiktokLive();
+    const nickname = info?.nickname || TIKTOK_USERNAME;
+    const preview = {
+      nickname,
+      avatar: info?.avatar,
+      roomId: "test", // bukan room asli → tidak dianggap live sungguhan
+      title: info?.live && info.title ? info.title : `Contoh judul live ${nickname} 🔴`,
+      cover: info?.live && info.cover ? info.cover : (info?.avatarLarge || ""),
+      viewers: info?.live ? info.viewers : 1
+    };
+
+    const payload = tiktokPayload(preview);
+    payload.content = `🧪 **[TEST]** **${nickname}** is live!`; // tanpa ping
+    await ch.send(payload);
+
+    return i.editReply({ embeds: [successEmbed(
+      'Test Terkirim',
+      `> Preview announce TikTok dikirim ke ${ch}.` +
+      (info ? '' : '\n> ⚠️ Data TikTok gagal diambil, preview pakai data contoh.'),
+      i.guild
+    )] });
+  } catch (err) {
+    console.log("❌ Error /tiktoktest:", err.message);
+    i.editReply({ embeds: [errorEmbed('> Gagal kirim test. Cek izin bot di channel announce.', i.guild)] }).catch(() => {});
+  }
+});
+
+async function checkTiktokLive() {
+  if (tiktokChecking) return;
+  tiktokChecking = true;
+
+  try {
+    const info = await getTiktokLive();
+    if (!info) return;
+
+    const ch = await client.channels.fetch(TIKTOK_CHANNEL_ID).catch(() => null);
+    if (!ch) return console.log("❌ Channel announce TikTok tidak ditemukan");
+
+    // ===== SEDANG LIVE =====
+    if (info.live) {
+      if (tiktokAnnounce?.roomId === info.roomId) {
+        // live yang sama → update jumlah viewers saja
+        if (tiktokAnnounce.viewers !== info.viewers) {
+          tiktokAnnounce.viewers = info.viewers;
+          await tiktokAnnounce.message.edit(tiktokPayload(info)).catch(() => {});
+        }
+        return;
+      }
+
+      // habis restart: cek apakah live ini sudah pernah diumumkan
+      const recent = await ch.messages.fetch({ limit: 50 }).catch(() => null);
+      const existing = recent?.find(m =>
+        m.author.id === client.user.id &&
+        m.embeds[0]?.url?.includes(`room=${info.roomId}`)
+      );
+
+      const message = existing
+        ? await existing.edit(tiktokPayload(info)).catch(() => existing)
+        : await ch.send(tiktokPayload(info));
+
+      tiktokAnnounce = { roomId: info.roomId, message, viewers: info.viewers };
+      if (!existing) console.log(`📺 ${info.nickname} live di TikTok, announce dikirim`);
+      return;
+    }
+
+    // ===== SELESAI LIVE =====
+    if (tiktokAnnounce) {
+      await tiktokAnnounce.message
+        .edit(tiktokPayload({ ...info, roomId: tiktokAnnounce.roomId }, true))
+        .catch(() => {});
+      console.log(`📴 ${info.nickname} selesai live`);
+      tiktokAnnounce = null;
+    }
+  } catch (err) {
+    console.log("❌ Error TikTok announce:", err.message);
+  } finally {
+    tiktokChecking = false;
+  }
+}
 
 // =======================
 // 🔊 TEMP VOICE
