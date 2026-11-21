@@ -9,6 +9,7 @@ const {
   ButtonStyle,
   EmbedBuilder,
   ModalBuilder,
+  AttachmentBuilder,
   TextInputBuilder,
   TextInputStyle,
   MessageFlags,
@@ -57,7 +58,8 @@ const PANEL_BUTTONS = ['name', 'limit', 'lock', 'unlock', 'region', 'claim'];
 const TIKTOK_USERNAME = "ccheryll.a";
 const TIKTOK_CHANNEL_ID = process.env.TIKTOK_CHANNEL_ID || "1573393206060519695"; // channel tempat announce
 const TIKTOK_PING = "";              // contoh: "@everyone" atau "<@&ID_ROLE>" — kosongkan kalau tidak mau ping
-const TIKTOK_CHECK_INTERVAL = 60000; // cek tiap 60 detik
+const TIKTOK_CHECK_INTERVAL = 60000; // cek live/offline tiap 60 detik
+const TIKTOK_UPDATE_INTERVAL = 60 * 60 * 1000; // selama live, refresh announce tiap 1 jam
 const TIKTOK_LINKTREE = "https://linktr.ee/cherylla";
 
 // =======================
@@ -250,7 +252,7 @@ client.once('clientReady', async () => {
 const TIKTOK_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const TIKTOK_LIVE_URL = `https://www.tiktok.com/@${TIKTOK_USERNAME}/live`;
 
-let tiktokAnnounce = null; // { roomId, message, viewers }
+let tiktokAnnounce = null; // { roomId, message, lastUpdate }
 let tiktokChecking = false;
 
 // TikTok tidak punya API resmi; ini endpoint yang dipakai web TikTok sendiri.
@@ -273,8 +275,8 @@ async function getTiktokLive() {
       avatar: user.avatarThumb || user.avatarMedium,
       avatarLarge: user.avatarLarger || user.avatarMedium || user.avatarThumb,
       title: room?.title || "",
-      cover: room?.coverUrl || room?.squareCoverImg || "",
-      viewers: room?.liveRoomStats?.userCount ?? 0
+      // TikTok sering kirim cover kosong → pakai foto profil besar sebagai banner
+      cover: room?.coverUrl || room?.squareCoverImg || user.avatarLarger || user.avatarMedium || ""
     };
   } catch (err) {
     console.log("⚠️ Gagal cek TikTok:", err.message);
@@ -282,7 +284,24 @@ async function getTiktokLive() {
   }
 }
 
-function tiktokPayload(info, ended = false) {
+// Gambar TikTok di-download lalu di-upload sendiri,
+// karena link CDN TikTok sering tidak bisa dibuka Discord (banner jadi kosong).
+async function downloadBanner(url) {
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { headers: { "User-Agent": TIKTOK_UA }, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return null;
+    const type = res.headers.get("content-type") || "";
+    const ext = type.includes("png") ? "png" : type.includes("webp") ? "webp" : "jpg";
+    const buffer = Buffer.from(await res.arrayBuffer());
+    return new AttachmentBuilder(buffer, { name: `banner.${ext}` });
+  } catch (err) {
+    console.log("⚠️ Gagal download banner:", err.message);
+    return null;
+  }
+}
+
+async function tiktokPayload(info, ended = false) {
   const embed = new EmbedBuilder()
     .setColor(ended ? 0x4f545c : 0xfe2c55)
     .setAuthor({
@@ -294,11 +313,12 @@ function tiktokPayload(info, ended = false) {
     // room id ditaruh di URL supaya setelah restart bot tahu live ini sudah diumumkan
     .setURL(`${TIKTOK_LIVE_URL}?room=${info.roomId}`);
 
+  let banner = null;
   if (ended) {
     embed.setDescription("Live sudah selesai.");
   } else {
-    embed.addFields({ name: "Viewers", value: String(info.viewers) });
-    if (info.cover) embed.setImage(info.cover);
+    banner = await downloadBanner(info.cover);
+    if (banner) embed.setImage(`attachment://${banner.name}`);
   }
 
   const button = new ButtonBuilder()
@@ -318,6 +338,8 @@ function tiktokPayload(info, ended = false) {
   return {
     content,
     embeds: [embed],
+    files: banner ? [banner] : [],
+    attachments: [], // saat edit: buang banner lama, ganti yang baru
     components: [new ActionRowBuilder().addComponents(
       ...(ended ? [] : [button]),
       linktreeButton
@@ -348,11 +370,10 @@ client.on('interactionCreate', async (i) => {
       avatar: info?.avatar,
       roomId: "test", // bukan room asli → tidak dianggap live sungguhan
       title: info?.live && info.title ? info.title : `Contoh judul live ${nickname} 🔴`,
-      cover: info?.live && info.cover ? info.cover : (info?.avatarLarge || ""),
-      viewers: info?.live ? info.viewers : 1
+      cover: info?.cover || info?.avatarLarge || ""
     };
 
-    const payload = tiktokPayload(preview);
+    const payload = await tiktokPayload(preview);
     payload.content = `🧪 **[TEST]** **${nickname}** is live!`; // tanpa ping
     await ch.send(payload);
 
@@ -382,10 +403,11 @@ async function checkTiktokLive() {
     // ===== SEDANG LIVE =====
     if (info.live) {
       if (tiktokAnnounce?.roomId === info.roomId) {
-        // live yang sama → update jumlah viewers saja
-        if (tiktokAnnounce.viewers !== info.viewers) {
-          tiktokAnnounce.viewers = info.viewers;
-          await tiktokAnnounce.message.edit(tiktokPayload(info)).catch(() => {});
+        // live yang sama → refresh announce (judul + banner) tiap 1 jam
+        if (Date.now() - tiktokAnnounce.lastUpdate >= TIKTOK_UPDATE_INTERVAL) {
+          tiktokAnnounce.lastUpdate = Date.now();
+          await tiktokAnnounce.message.edit(await tiktokPayload(info)).catch(() => {});
+          console.log(`🔄 Announce live ${info.nickname} di-refresh`);
         }
         return;
       }
@@ -397,11 +419,12 @@ async function checkTiktokLive() {
         m.embeds[0]?.url?.includes(`room=${info.roomId}`)
       );
 
+      const payload = await tiktokPayload(info);
       const message = existing
-        ? await existing.edit(tiktokPayload(info)).catch(() => existing)
-        : await ch.send(tiktokPayload(info));
+        ? await existing.edit(payload).catch(() => existing)
+        : await ch.send(payload);
 
-      tiktokAnnounce = { roomId: info.roomId, message, viewers: info.viewers };
+      tiktokAnnounce = { roomId: info.roomId, message, lastUpdate: Date.now() };
       if (!existing) console.log(`📺 ${info.nickname} live di TikTok, announce dikirim`);
       return;
     }
@@ -409,7 +432,7 @@ async function checkTiktokLive() {
     // ===== SELESAI LIVE =====
     if (tiktokAnnounce) {
       await tiktokAnnounce.message
-        .edit(tiktokPayload({ ...info, roomId: tiktokAnnounce.roomId }, true))
+        .edit(await tiktokPayload({ ...info, roomId: tiktokAnnounce.roomId }, true))
         .catch(() => {});
       console.log(`📴 ${info.nickname} selesai live`);
       tiktokAnnounce = null;
